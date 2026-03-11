@@ -72,7 +72,7 @@ function groupSectionsForPlanning(sections: ParsedSection[], maxDirectories: num
     const mergedTitle =
       group.length === 1
         ? normalizeTitle(first.title)
-        : `${normalizeTitle(first.title).slice(0, 10)}-${normalizeTitle(last.title).slice(0, 10)}`;
+        : `${normalizeTitle(first.title)}-${normalizeTitle(last.title)}`;
 
     merged.push({
       id: first.id,
@@ -115,13 +115,12 @@ function buildPrompt(doc: ParsedDocument, input: GeneratorInput, detailPages: nu
     `- 总页数: ${input.totalPages}，其中封面 1 页，目录 1 页，详情页 ${detailPages} 页`,
     "- 目录项可以跨多页，但不能把多个目录项合并在同一页",
     `- 目录项尽可能不超过 ${Math.min(TARGET_DIRECTORY_LIMIT, detailPages)} 个，优先聚合相近内容`,
-    "- 目录标题不超过 5 个字，目录简要说明不超过 10 个字",
     "- 如果信息过多，优先压缩摘要表达，不要删除目录结构",
     `- 页型只能从 ${LAYOUT_OPTIONS_TEXT} 里选，同一种页型可以重复使用`,
     "- 页型要与内容量匹配：简短概述优先 overview / two-column，中量内容优先 three-column / split-grid，高密内容优先 four-column / progress / hierarchy",
     "- image-left / image-right / image 页只有文档里确有图片时才优先使用，否则用 overview 或 vertical",
     "- table 页只有文档里确有表格时才优先使用",
-    "- 每页页标题不超过 7 个字，内容简介不超过 30 个字，常规标题不超过 15 个字，说明性文字请拆成便于后续分配给多个小标题的短句，单句不超过 60 个字",
+    "- 不要因为字数限制主动裁短标题或摘要，优先保留原始语义完整性",
     "- 不要输出强调标题字段",
     "",
     "请返回 JSON：",
@@ -267,21 +266,12 @@ function splitIntoUnits(text: string): string[] {
     .map((item) => item.trim())
     .filter((item) => item.length >= 6);
 
-  if (units.length > 1) {
+  if (units.length > 0) {
     return units;
   }
 
   const normalized = text.trim();
-  if (normalized.length <= 18) {
-    return units;
-  }
-
-  const chunked: string[] = [];
-  for (let index = 0; index < normalized.length; index += 18) {
-    chunked.push(normalized.slice(index, index + 18).trim());
-  }
-
-  return chunked.filter((item) => item.length >= 6);
+  return normalized ? [normalized] : [];
 }
 
 function buildSummaryBuckets(section: ParsedDocument["sections"][number], pageCount: number): string[] {

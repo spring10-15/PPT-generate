@@ -37,11 +37,8 @@ function stripTitlePrefix(text: string) {
 
 function truncatePhrase(text: string, maxLength: number) {
   const normalized = normalizeText(text);
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return normalized.slice(0, maxLength).trim();
+  void maxLength;
+  return normalized;
 }
 
 function dedupeUnits(units: string[], blocked: string[] = []) {

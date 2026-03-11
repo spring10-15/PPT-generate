@@ -247,7 +247,7 @@ async function parseDocBuffer(fileName: string, buffer: Buffer): Promise<ParsedD
   const sections = (paragraphs.length > 0 ? paragraphs : ["项目概述"])
     .slice(0, 8)
     .map((paragraph, index) =>
-      sectionFromParagraphs(index === 0 ? paragraph.slice(0, 24) || "概览" : `章节 ${index}`, [paragraph], 1, index)
+      sectionFromParagraphs(index === 0 ? paragraph || "概览" : `章节 ${index}`, [paragraph], 1, index)
     );
 
   return {

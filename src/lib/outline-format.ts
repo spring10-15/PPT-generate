@@ -13,11 +13,8 @@ const TITLE_PREFIX_PATTERNS = [
 
 function truncateCoreText(text: string, maxLength: number) {
   const normalized = stripTitlePrefix(text).replace(/\s+/g, " ").trim();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  return normalized.slice(0, maxLength).trim();
+  void maxLength;
+  return normalized;
 }
 
 function toChineseNumeral(value: number): string {

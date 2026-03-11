@@ -114,20 +114,8 @@ function normalizeText(value: string) {
 
 function truncateText(text: string, maxLength: number) {
   const normalized = normalizeText(text);
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-
-  const clipped = normalized.slice(0, maxLength);
-  const punctuationIndex = Math.max(
-    clipped.lastIndexOf("，"),
-    clipped.lastIndexOf("。"),
-    clipped.lastIndexOf("；"),
-    clipped.lastIndexOf(" "),
-    clipped.lastIndexOf("、")
-  );
-  const safe = punctuationIndex >= Math.floor(maxLength * 0.55) ? clipped.slice(0, punctuationIndex) : clipped;
-  return `${safe.trim()}...`;
+  void maxLength;
+  return normalized;
 }
 
 function splitSummary(summary: string) {
@@ -170,7 +158,7 @@ function buildHeading(text: string, fallback: string) {
     .split(/\s+/)
     .filter(Boolean)
     .join("");
-  const candidate = source.slice(0, SLOT_LIMITS.smallTitle);
+  const candidate = source;
   return candidate || fallback;
 }
 
@@ -199,24 +187,8 @@ function buildParagraphLines(items: string[], maxLines: number, maxLength: numbe
 
 function splitLongTextForSlots(text: string, chunkLength: number) {
   const normalized = normalizeText(text);
-  if (normalized.length <= chunkLength + 2) {
-    return [normalized];
-  }
-
-  const pivot = Math.min(chunkLength, normalized.length - 1);
-  const minBreak = Math.floor(chunkLength * 0.6);
-  const breakIndex = Math.max(
-    normalized.lastIndexOf("，", pivot),
-    normalized.lastIndexOf("、", pivot),
-    normalized.lastIndexOf("；", pivot),
-    normalized.lastIndexOf("：", pivot),
-    normalized.lastIndexOf(" ", pivot)
-  );
-  const safeBreak = breakIndex >= minBreak ? breakIndex : pivot;
-  const left = normalized.slice(0, safeBreak + 1).trim();
-  const right = normalized.slice(safeBreak + 1).trim();
-
-  return [left, right].filter(Boolean);
+  void chunkLength;
+  return normalized ? [normalized] : [];
 }
 
 function expandUnitsForTarget(items: string[], targetCount: number, chunkLength: number) {
