@@ -150,6 +150,8 @@ function buildPrompt(doc: ParsedDocument, input: GeneratorInput, detailPages: nu
     JSON.stringify(
       {
         userName: input.userName,
+        targetAudience: input.targetAudience,
+        estimatedMinutes: input.estimatedMinutes,
         titleGuess: doc.titleGuess,
         subtitleGuess: doc.subtitleGuess,
         sections: trimSections(planningSections)

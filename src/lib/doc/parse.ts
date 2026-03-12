@@ -78,6 +78,106 @@ function sectionFromParagraphs(
   };
 }
 
+function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" | "txt" | "text"): ParsedDocument {
+  const sections: ParsedSection[] = [];
+  const lines = rawText.split(/\r?\n/);
+  let currentTitle = "概览";
+  let currentLevel = 1;
+  let currentParagraphs: string[] = [];
+  let currentTables: string[][] = [];
+  let sectionIndex = 0;
+
+  const flush = () => {
+    const normalizedParagraphs = currentParagraphs.map((text) => normalizeText(text)).filter(Boolean);
+    if (normalizedParagraphs.length === 0 && currentTables.length === 0 && sections.length > 0) {
+      return;
+    }
+
+    sections.push({
+      id: makeId("section", sectionIndex),
+      title: currentTitle,
+      level: currentLevel,
+      paragraphs: normalizedParagraphs.length > 0 ? normalizedParagraphs : ["待补充内容"],
+      tables: currentTables,
+      imageIds: []
+    });
+    sectionIndex += 1;
+    currentTables = [];
+    currentParagraphs = [];
+  };
+
+  const pushParagraph = (value: string) => {
+    const normalized = normalizeText(value);
+    if (normalized) {
+      currentParagraphs.push(normalized);
+    }
+  };
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.replace(/\t/g, "    ");
+    const trimmed = normalizeText(line);
+
+    if (!trimmed) {
+      return;
+    }
+
+    const markdownHeading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (markdownHeading) {
+      if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
+        flush();
+      }
+      currentTitle = normalizeText(markdownHeading[2]) || `章节 ${sectionIndex + 1}`;
+      currentLevel = markdownHeading[1].length;
+      return;
+    }
+
+    const textHeading = line.match(/^(第[一二三四五六七八九十百]+[章节部分篇]|[一二三四五六七八九十]+[、.．]|\d+[、.．])\s*(.+)$/);
+    if (textHeading && trimmed.length <= 40) {
+      if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
+        flush();
+      }
+      currentTitle = normalizeText(textHeading[2]) || `章节 ${sectionIndex + 1}`;
+      currentLevel = 1;
+      return;
+    }
+
+    if (/^\|.+\|$/.test(trimmed)) {
+      const cells = trimmed
+        .split("|")
+        .map((item) => normalizeText(item))
+        .filter(Boolean);
+      if (cells.length > 0) {
+        currentTables.push(cells);
+      }
+      return;
+    }
+
+    if (/^[-*]\s+/.test(trimmed)) {
+      pushParagraph(trimmed.replace(/^[-*]\s+/, ""));
+      return;
+    }
+
+    pushParagraph(trimmed);
+  });
+
+  if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
+    flush();
+  }
+
+  return {
+    fileName,
+    fileType,
+    rawText,
+    titleGuess: guessTitleFromSections(sections, rawText),
+    subtitleGuess: buildSubtitle(rawText),
+    sections: sections.map((section, index) => ({
+      ...section,
+      title: section.title || `章节 ${index + 1}`
+    })),
+    images: []
+  };
+}
+
 function parseDocxHtml(
   fileName: string,
   html: string,
@@ -297,7 +397,31 @@ export async function parseWordDocument(file: File): Promise<ParsedDocument> {
     return parseDocBuffer(fileName, buffer);
   }
 
-  throw new Error("仅支持 .doc 或 .docx 文件。");
+  if (extension === "md" || extension === "markdown") {
+    const rawText = Buffer.from(buffer).toString("utf-8");
+    return parseMarkdownOrText(fileName, rawText, "md");
+  }
+
+  if (extension === "txt") {
+    const rawText = Buffer.from(buffer).toString("utf-8");
+    return parseMarkdownOrText(fileName, rawText, "txt");
+  }
+
+  throw new Error("仅支持 .doc、.docx、.md 或 .txt 文件。");
+}
+
+export async function parseSourceDocument(
+  source: File | { name?: string; text: string; type?: "md" | "txt" | "text" }
+): Promise<ParsedDocument> {
+  if (source instanceof File) {
+    return parseWordDocument(source);
+  }
+
+  const fileType = source.type ?? "text";
+  const fileName =
+    source.name?.trim() ||
+    (fileType === "md" ? "聊天输入素材.md" : fileType === "txt" ? "聊天输入素材.txt" : "聊天输入素材.txt");
+  return parseMarkdownOrText(fileName, source.text, fileType);
 }
 
 export function suggestLayoutForSection(section: ParsedSection) {

@@ -3,7 +3,10 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "PPT 生成",
-  description: "根据固定模板生成 PPT。"
+  description: "根据固定模板生成 PPT。",
+  icons: {
+    icon: "/favicon.svg"
+  }
 };
 
 export default function RootLayout({

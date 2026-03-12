@@ -1,63 +1,31 @@
 import { NextResponse } from "next/server";
-import { z } from "zod";
+import { assemblyToOutlineDocument, validateAssemblyDocument } from "@/lib/assembly";
 import { generatePptBuffer } from "@/lib/ppt/generate";
-import { SUPPORTED_LAYOUT_TYPES } from "@/lib/types";
+import type { AssemblyInstructionDocument } from "@/lib/types";
 
-const slideSchema = z.object({
-  id: z.string(),
-  directoryId: z.string(),
-  directoryTitle: z.string(),
-  title: z.string(),
-  type: z.enum(SUPPORTED_LAYOUT_TYPES),
-  summary: z.string(),
-  content: z.object({
-    intro: z.string(),
-    regularTitle: z.string(),
-    description: z.string()
-  }),
-  imageSuggestion: z.string(),
-  imageIds: z.array(z.string()),
-  table: z.array(z.array(z.string())).optional()
-});
+function assertAssemblyDocument(body: unknown): AssemblyInstructionDocument {
+  if (!body || typeof body !== "object") {
+    throw new Error("导出参数无效。");
+  }
 
-const outlineSchema = z.object({
-  cover: z.object({
-    title: z.string(),
-    subtitle: z.string(),
-    userName: z.string(),
-    dateLabel: z.string()
-  }),
-  directoryTitle: z.string(),
-  directory: z.array(
-    z.object({
-      id: z.string(),
-      title: z.string(),
-      description: z.string(),
-      pageStart: z.number().int(),
-      pageCount: z.number().int()
-    })
-  ),
-  slides: z.array(slideSchema),
-  pageSummary: z.object({
-    totalPages: z.number().int(),
-    coverPages: z.number().int(),
-    directoryPages: z.number().int(),
-    detailPages: z.number().int()
-  }),
-  extractedImages: z.array(
-    z.object({
-      id: z.string(),
-      name: z.string(),
-      mimeType: z.string(),
-      dataUri: z.string()
-    })
-  )
-});
+  const candidate = body as Partial<AssemblyInstructionDocument>;
+  if (!candidate.cover || !candidate.directory || !candidate.slides || !candidate.extractedImages) {
+    throw new Error("导出参数缺少必要的装配指令。");
+  }
+
+  return candidate as AssemblyInstructionDocument;
+}
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const outline = outlineSchema.parse(body);
+    const assembly = validateAssemblyDocument(assertAssemblyDocument(body));
+
+    if (assembly.validation.hasOverflow) {
+      throw new Error("当前仍有超出模板物理边界的字段，请先修正后再导出。");
+    }
+
+    const outline = assemblyToOutlineDocument(assembly);
     const buffer = await generatePptBuffer(outline);
     const fileName = `${outline.cover.title.replace(/[\\/:*?"<>|]/g, "_") || "汇报材料"}.pptx`;
 

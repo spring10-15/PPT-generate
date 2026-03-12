@@ -5,6 +5,7 @@ node_modules
 dist
 out
 tmp
+.playwright-cli
 *.log
 .DS_Store
 tsconfig.tsbuildinfo

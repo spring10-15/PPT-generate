@@ -29,7 +29,6 @@ const TEMPLATE_PLACEHOLDER_TEXT = [
 ];
 
 const COVER_SOURCE_SLIDE = 1;
-const DIRECTORY_SOURCE_SLIDE = 22;
 const SLIDE_RELATIONSHIP_BASE_ID = 100;
 
 const SLOT_LIMITS = {
@@ -1167,9 +1166,10 @@ export async function generatePptBuffer(outline: OutlineDocument): Promise<Buffe
   const templateBuffer = await readFile(getTemplatePath());
   const zip = await JSZip.loadAsync(templateBuffer);
   const highestExistingSlide = getHighestExistingSlide(zip);
+  const directorySourceSlide = highestExistingSlide;
   const slideCount = normalizedOutline.slides.length + 2;
   const detailSources = normalizedOutline.slides.map((slide) => buildDetailPlan(slide).sourceSlide);
-  const sourceSlides = await loadSourceSlides(zip, [COVER_SOURCE_SLIDE, DIRECTORY_SOURCE_SLIDE, ...detailSources]);
+  const sourceSlides = await loadSourceSlides(zip, [COVER_SOURCE_SLIDE, directorySourceSlide, ...detailSources]);
   const extraExtensions = new Set<string>(["png"]);
 
   zip.file("ppt/slides/media/generated-blank.png", Buffer.from(BLANK_IMAGE_BASE64, "base64"));
@@ -1187,7 +1187,7 @@ export async function generatePptBuffer(outline: OutlineDocument): Promise<Buffe
   }
 
   {
-    const directorySource = sourceSlides.get(DIRECTORY_SOURCE_SLIDE);
+    const directorySource = sourceSlides.get(directorySourceSlide);
     if (!directorySource) {
       throw new Error("模板缺少目录参考页。");
     }
