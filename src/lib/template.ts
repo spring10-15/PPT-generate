@@ -5,7 +5,7 @@ import type { TemplateColorTokens, TemplateMetrics } from "@/lib/types";
 
 const EMU_PER_INCH = 914400;
 const DEFAULT_TEMPLATE_PATH =
-  process.env.PPT_TEMPLATE_PATH ?? "/Users/springwater/Desktop/中国移动PPT模板.pptx";
+  process.env.PPT_TEMPLATE_PATH ?? "/absolute/path/to/中国移动PPT模板.pptx";
 
 const parser = new XMLParser({
   ignoreAttributes: false,

@@ -113,7 +113,7 @@
 ## 6. 模板约束
 
 ### 6.1 模板来源
-- 模板文件：`/Users/springwater/Desktop/中国移动PPT模板.pptx`
+- 模板文件：由部署环境通过 `PPT_TEMPLATE_PATH` 指向固定模板文件
 
 ### 6.2 固定规则
 - 以模板中的真实页面 XML 为基准进行填充。
