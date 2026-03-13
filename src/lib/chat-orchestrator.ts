@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { validateAssemblyDocument } from "@/lib/assembly";
-import { buildGenerationPipelineFromSource } from "@/lib/pipeline";
+import { buildGenerationPipelineFromSource, rebuildPipelineFromConfirmedDirectory } from "@/lib/pipeline";
 import type {
   AssemblyInstructionDocument,
+  ChatDirective,
   ChatRouteResponse,
   ChatSessionState,
   GenerationPipeline,
@@ -47,7 +48,12 @@ const summaryTurnSchema = z.object({
         pageTitle: z.string().optional(),
         intro: z.string().optional(),
         regularTitle: z.string().optional(),
-        description: z.string().optional()
+        description: z.string().optional(),
+        sectionOrder: z.number().int().min(1).optional(),
+        sectionLabel: z.string().optional(),
+        cardOrder: z.number().int().min(1).optional(),
+        cardTitle: z.string().optional(),
+        cardBody: z.string().optional()
       })
     )
     .default([])
@@ -127,7 +133,7 @@ function buildMissingPrompt(state: ChatSessionState) {
     return "现在请上传素材文件，支持 `.doc / .docx / .md / .txt`，也可以直接把纯文字素材粘贴到对话框里。";
   }
 
-  return "信息已经齐了，我准备开始生成目录和摘要。";
+  return "信息已经齐了，我准备先生成目录架构。";
 }
 
 async function requestStructuredJson<T>(
@@ -352,12 +358,49 @@ async function parseSummaryTurn(message: string, pipeline: GenerationPipeline) {
     }
   });
 
+  for (const match of normalized.matchAll(
+    /第\s*(\d+)\s*页.*?第\s*(\d+)\s*(?:分区|模块|栏目|栏位|部分).*?(?:标题|分区标题|模块标题)(?:改为|为)\s*[:：]?\s*([^\n]+)/g
+  )) {
+    heuristic.action = "revise";
+    heuristic.updates.push({
+      pageNumber: Number(match[1]),
+      sectionOrder: Number(match[2]),
+      sectionLabel: normalizeText(match[3])
+    });
+  }
+
+  for (const match of normalized.matchAll(
+    /第\s*(\d+)\s*页.*?第\s*(\d+)\s*(?:分区|模块|栏目|栏位|部分).*?第\s*(\d+)\s*(?:条|项|卡片).*?(?:小标题|标题)(?:改为|为)\s*[:：]?\s*([^\n]+)/g
+  )) {
+    heuristic.action = "revise";
+    heuristic.updates.push({
+      pageNumber: Number(match[1]),
+      sectionOrder: Number(match[2]),
+      cardOrder: Number(match[3]),
+      cardTitle: normalizeText(match[4])
+    });
+  }
+
+  for (const match of normalized.matchAll(
+    /第\s*(\d+)\s*页.*?第\s*(\d+)\s*(?:分区|模块|栏目|栏位|部分).*?第\s*(\d+)\s*(?:条|项|卡片).*?(?:说明性文字|说明|正文|内容)(?:改为|为)\s*[:：]?\s*([^\n]+)/g
+  )) {
+    heuristic.action = "revise";
+    heuristic.updates.push({
+      pageNumber: Number(match[1]),
+      sectionOrder: Number(match[2]),
+      cardOrder: Number(match[3]),
+      cardBody: normalizeText(match[4])
+    });
+  }
+
   const aiParsed = await requestStructuredJson(
     summaryTurnSchema,
     [
       "你负责解析用户对 PPT 详情摘要的确认或修改意图。",
       "如果用户明确确认摘要，action 返回 confirm。",
       "如果用户要求修改或删除页面，action 返回 revise，并按页码输出 updates。",
+      "如果用户修改槽位内容，也要输出到 updates 中。",
+      "sectionOrder 表示第几个分区，cardOrder 表示分区里的第几个小条目。",
       "页码以当前列表中的 pageNumber 为准。",
       "只输出 JSON。"
     ].join("\n"),
@@ -369,7 +412,16 @@ async function parseSummaryTurn(message: string, pipeline: GenerationPipeline) {
           pageTitle: slide.fields.pageTitle.value,
           intro: slide.fields.intro.value,
           regularTitle: slide.fields.regularTitle.value,
-          description: truncateText(slide.fields.description.value, 90)
+          description: truncateText(slide.fields.description.value, 90),
+          sections: slide.slotContent.sections.map((section) => ({
+            sectionOrder: section.order,
+            label: section.label,
+            cards: section.cards.map((card) => ({
+              cardOrder: card.order,
+              title: card.title,
+              body: truncateText(card.body, 60)
+            }))
+          }))
         }))
       },
       null,
@@ -398,36 +450,6 @@ function buildGeneratorInput(state: ChatSessionState): GeneratorInput {
     estimatedMinutes: state.input.estimatedMinutes,
     totalPages: state.input.totalPages
   };
-}
-
-function formatDirectoryMarkdown(pipeline: GenerationPipeline) {
-  const lines = [
-    "### 目录架构",
-    ...pipeline.node3.directory.map(
-      (item) =>
-        `${item.order}. **${item.fields.title.value || "未命名目录"}**\n   - 简要说明：${item.fields.description.value || "待补充"}\n   - 覆盖页数：${item.pageCount} 页`
-    ),
-    "",
-    "如果确认，请直接回复 `确认目录`。",
-    "如果要修改，可以直接说：`目录 1 标题改为……`、`目录 2 简述改为……`、`删除目录 3`。"
-  ];
-
-  return lines.join("\n");
-}
-
-function formatSummaryMarkdown(pipeline: GenerationPipeline) {
-  const lines = [
-    "### 详情摘要",
-    ...pipeline.node3.slides.map(
-      (slide) =>
-        `#### 第 ${slide.pageNumber} 页 · ${slide.layoutName}\n- 页标题：${slide.fields.pageTitle.value || "待补充"}\n- 内容简介：${slide.fields.intro.value || "待补充"}\n- 常规标题：${slide.fields.regularTitle.value || "待补充"}\n- 说明性文字：${truncateText(slide.fields.description.value || "待补充", 180)}`
-    ),
-    "",
-    "如果确认，请回复 `确认摘要`。",
-    "如果要修改，可以直接说：`第 2 页 标题改为……`、`第 3 页 内容简介改为……`、`删除第 4 页`。"
-  ];
-
-  return lines.join("\n");
 }
 
 function formatValidationIssues(document: AssemblyInstructionDocument) {
@@ -522,22 +544,55 @@ function applySummaryUpdates(
       ...node3,
       slides: node3.slides.map((slide) =>
         slide.id === target.id
-          ? {
-              ...slide,
-              fields: {
-                ...slide.fields,
-                pageTitle: update.pageTitle
-                  ? { ...slide.fields.pageTitle, value: update.pageTitle }
-                  : slide.fields.pageTitle,
-                intro: update.intro ? { ...slide.fields.intro, value: update.intro } : slide.fields.intro,
-                regularTitle: update.regularTitle
-                  ? { ...slide.fields.regularTitle, value: update.regularTitle }
-                  : slide.fields.regularTitle,
-                description: update.description
-                  ? { ...slide.fields.description, value: update.description }
-                  : slide.fields.description
+          ? (() => {
+              const nextSlide = {
+                ...slide,
+                fields: {
+                  ...slide.fields,
+                  pageTitle: update.pageTitle
+                    ? { ...slide.fields.pageTitle, value: update.pageTitle }
+                    : slide.fields.pageTitle,
+                  intro: update.intro ? { ...slide.fields.intro, value: update.intro } : slide.fields.intro,
+                  regularTitle: update.regularTitle
+                    ? { ...slide.fields.regularTitle, value: update.regularTitle }
+                    : slide.fields.regularTitle,
+                  description: update.description
+                    ? { ...slide.fields.description, value: update.description }
+                    : slide.fields.description
+                }
+              };
+
+              if (!update.sectionOrder) {
+                return nextSlide;
               }
-            }
+
+              return {
+                ...nextSlide,
+                slotMode: "manual" as const,
+                slotContent: {
+                  ...nextSlide.slotContent,
+                  sections: nextSlide.slotContent.sections.map((section) =>
+                    section.order === update.sectionOrder
+                      ? {
+                          ...section,
+                          label: update.sectionLabel ?? section.label,
+                          cards: update.cardOrder
+                            ? section.cards.map((card) =>
+                                card.order === update.cardOrder
+                                  ? {
+                                      ...card,
+                                      title: update.cardTitle ?? card.title,
+                                      body: update.cardBody ?? card.body
+                                    }
+                                  : card
+                              )
+                            : section.cards
+                        }
+                      : section
+                  )
+                }
+              };
+            })()
           : slide
       )
     };
@@ -590,9 +645,11 @@ export async function handleChatTurn(params: {
   state: ChatSessionState | null;
   message: string;
   file: File | null;
+  directive?: ChatDirective | null;
 }): Promise<ChatRouteResponse> {
   const currentState = params.state ? { ...params.state } : createInitialChatState();
   const message = params.message.trim();
+  const directive = params.directive ?? null;
 
   if (isResetIntent(message)) {
     return {
@@ -659,8 +716,7 @@ export async function handleChatTurn(params: {
       return {
         state: stateWithPipeline,
         assistantMessages: [
-          "我已经完成目录规划，下面请你直接在对话里确认或修改。",
-          formatDirectoryMarkdown(pipeline)
+          "我已经完成目录规划，请直接在下面的目录确认卡片里修改或确认。"
         ],
         action: "none"
       };
@@ -684,6 +740,39 @@ export async function handleChatTurn(params: {
   }
 
   if (currentState.stage === "directory") {
+    if (directive?.type === "confirm-directory") {
+      const rebuiltPipeline = rebuildPipelineFromConfirmedDirectory(currentState.pipeline);
+      const nextState: ChatSessionState = {
+        ...currentState,
+        stage: "summary",
+        pipeline: rebuiltPipeline
+      };
+
+      return {
+        state: nextState,
+        assistantMessages: [
+          "目录已确认。我已经结合素材和已确认目录展开了详情摘要，请继续在下面的摘要卡片里确认或修改。"
+        ],
+        action: "none"
+      };
+    }
+
+    if (directive?.type === "directory-update" && directive.updates.length > 0) {
+      const nextPipeline = applyDirectoryUpdates(currentState.pipeline, directive.updates);
+      const nextState: ChatSessionState = {
+        ...currentState,
+        pipeline: nextPipeline
+      };
+
+      return {
+        state: nextState,
+        assistantMessages: [
+          "目录已按你的意见更新，请继续在目录确认卡片里查看。"
+        ],
+        action: "none"
+      };
+    }
+
     const parsed = await parseDirectoryTurn(message, currentState.pipeline);
 
     if (parsed.action === "confirm") {
@@ -695,8 +784,7 @@ export async function handleChatTurn(params: {
       return {
         state: nextState,
         assistantMessages: [
-          "目录已确认。下面是详情摘要，请继续在对话里确认或修改。",
-          formatSummaryMarkdown(currentState.pipeline)
+          "目录已确认。我已经结合素材和已确认目录展开了详情摘要，请继续在下面的摘要卡片里确认或修改。"
         ],
         action: "none"
       };
@@ -712,8 +800,7 @@ export async function handleChatTurn(params: {
       return {
         state: nextState,
         assistantMessages: [
-          "目录已按你的意见更新。请继续确认。",
-          formatDirectoryMarkdown(nextPipeline)
+          "目录已按你的意见更新，请继续在目录确认卡片里查看。"
         ],
         action: "none"
       };
@@ -729,6 +816,52 @@ export async function handleChatTurn(params: {
   }
 
   if (currentState.stage === "summary") {
+    if (directive?.type === "confirm-summary") {
+      const validated = validateAssemblyDocument(currentState.pipeline.node3);
+      const nextState: ChatSessionState = {
+        ...currentState,
+        stage: validated.validation.hasOverflow ? "summary" : "ready",
+        pipeline: {
+          ...currentState.pipeline,
+          node3: validated
+        }
+      };
+
+      return {
+        state: nextState,
+        assistantMessages: validated.validation.hasOverflow
+          ? [
+              "摘要已经锁定，但当前仍有字段超出模板红线，请先继续修改。",
+              formatValidationIssues(validated)
+            ]
+          : [
+              "详情摘要已确认，所有字段都在模板红线内。现在你可以直接回复 `生成PPT`。"
+            ],
+        action: "none"
+      };
+    }
+
+    if (directive?.type === "summary-update" && directive.updates.length > 0) {
+      const nextPipeline = applySummaryUpdates(currentState.pipeline, directive.updates);
+      const validated = validateAssemblyDocument(nextPipeline.node3);
+      const nextState: ChatSessionState = {
+        ...currentState,
+        pipeline: {
+          ...nextPipeline,
+          node3: validated
+        }
+      };
+
+      return {
+        state: nextState,
+        assistantMessages: [
+          "详情摘要已按你的意见更新，请继续在摘要确认卡片里查看。",
+          formatValidationIssues(validated)
+        ].filter(Boolean),
+        action: "none"
+      };
+    }
+
     const parsed = await parseSummaryTurn(message, currentState.pipeline);
 
     if (parsed.action === "confirm") {
@@ -747,7 +880,6 @@ export async function handleChatTurn(params: {
         assistantMessages: validated.validation.hasOverflow
           ? [
               "摘要已经锁定，但当前仍有字段超出模板红线，请先继续修改。",
-              formatSummaryMarkdown(nextState.pipeline!),
               formatValidationIssues(validated)
             ]
           : [
@@ -771,8 +903,7 @@ export async function handleChatTurn(params: {
       return {
         state: nextState,
         assistantMessages: [
-          "详情摘要已按你的意见更新。请继续确认。",
-          formatSummaryMarkdown(nextState.pipeline!),
+          "详情摘要已按你的意见更新，请继续在摘要确认卡片里查看。",
           formatValidationIssues(validated)
         ].filter(Boolean),
         action: "none"
@@ -796,6 +927,27 @@ export async function handleChatTurn(params: {
     };
   }
 
+  if (directive?.type === "summary-update" && directive.updates.length > 0) {
+    const nextPipeline = applySummaryUpdates(currentState.pipeline, directive.updates);
+    const validated = validateAssemblyDocument(nextPipeline.node3);
+    const nextState: ChatSessionState = {
+      ...currentState,
+      pipeline: {
+        ...nextPipeline,
+        node3: validated
+      }
+    };
+
+    return {
+      state: nextState,
+      assistantMessages: [
+        "已按你的意见更新终稿前的摘要内容。确认无误后，回复 `生成PPT` 即可。",
+        formatValidationIssues(validated)
+      ].filter(Boolean),
+      action: "none"
+    };
+  }
+
   const parsed = await parseSummaryTurn(message, currentState.pipeline);
   if (parsed.updates.length > 0) {
     const nextPipeline = applySummaryUpdates(currentState.pipeline, parsed.updates);
@@ -812,7 +964,6 @@ export async function handleChatTurn(params: {
       state: nextState,
       assistantMessages: [
         "已按你的意见更新终稿前的摘要内容。确认无误后，回复 `生成PPT` 即可。",
-        formatSummaryMarkdown(nextState.pipeline!),
         formatValidationIssues(validated)
       ].filter(Boolean),
       action: "none"

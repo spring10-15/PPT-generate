@@ -1,11 +1,13 @@
+import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
 import type { TemplateColorTokens, TemplateMetrics } from "@/lib/types";
 
 const EMU_PER_INCH = 914400;
-const DEFAULT_TEMPLATE_PATH =
-  process.env.PPT_TEMPLATE_PATH ?? "/absolute/path/to/中国移动PPT模板.pptx";
+export const PROJECT_TEMPLATE_DIR = join(process.cwd(), "assets", "templates");
+export const PROJECT_TEMPLATE_PATH = join(PROJECT_TEMPLATE_DIR, "中国移动PPT模板.pptx");
+const DEFAULT_TEMPLATE_PATH = process.env.PPT_TEMPLATE_PATH ?? PROJECT_TEMPLATE_PATH;
 
 const parser = new XMLParser({
   ignoreAttributes: false,

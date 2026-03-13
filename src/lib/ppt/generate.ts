@@ -8,6 +8,8 @@ import {
   normalizeOutlineDocument,
   stripTitlePrefix
 } from "@/lib/outline-format";
+import { splitUnitTitleBody } from "@/lib/slide-content";
+import { loadTemplateSchema } from "@/lib/template-schema";
 import { getTemplatePath } from "@/lib/template";
 
 const XML_HEADER = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
@@ -113,8 +115,27 @@ function normalizeText(value: string) {
 
 function truncateText(text: string, maxLength: number) {
   const normalized = normalizeText(text);
-  void maxLength;
-  return normalized;
+  if (!normalized || normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  const units = splitSummary(normalized);
+  if (units.length > 1) {
+    let result = "";
+
+    units.forEach((unit) => {
+      const next = result ? `${result}；${unit}` : unit;
+      if (next.length <= maxLength) {
+        result = next;
+      }
+    });
+
+    if (result) {
+      return result;
+    }
+  }
+
+  return normalized.slice(0, maxLength).trim();
 }
 
 function splitSummary(summary: string) {
@@ -152,6 +173,11 @@ function dedupeTextItems(items: string[], blocked: string[] = []) {
 }
 
 function buildHeading(text: string, fallback: string) {
+  const labeled = splitUnitTitleBody(text);
+  if (labeled.title) {
+    return labeled.title || fallback;
+  }
+
   const source = normalizeText(text)
     .replace(/[：:；;。！？,.，、]/g, " ")
     .split(/\s+/)
@@ -186,8 +212,45 @@ function buildParagraphLines(items: string[], maxLines: number, maxLength: numbe
 
 function splitLongTextForSlots(text: string, chunkLength: number) {
   const normalized = normalizeText(text);
-  void chunkLength;
-  return normalized ? [normalized] : [];
+  if (!normalized) {
+    return [];
+  }
+
+  const units = splitSummary(normalized);
+  if (units.length > 1) {
+    const chunks: string[] = [];
+    let current = "";
+
+    units.forEach((unit) => {
+      const next = current ? `${current}；${unit}` : unit;
+      if (next.length <= chunkLength) {
+        current = next;
+        return;
+      }
+
+      if (current) {
+        chunks.push(current);
+      }
+
+      current = unit.length <= chunkLength ? unit : unit.slice(0, chunkLength).trim();
+    });
+
+    if (current) {
+      chunks.push(current);
+    }
+
+    return chunks.filter(Boolean);
+  }
+
+  if (normalized.length <= chunkLength) {
+    return [normalized];
+  }
+
+  const chunks: string[] = [];
+  for (let index = 0; index < normalized.length; index += chunkLength) {
+    chunks.push(normalized.slice(index, index + chunkLength).trim());
+  }
+  return chunks.filter(Boolean);
 }
 
 function expandUnitsForTarget(items: string[], targetCount: number, chunkLength: number) {
@@ -239,14 +302,10 @@ function buildCardDraft(
     };
   }
 
-  const heading = buildPlainSlot(buildHeading(source, fallback), fallback);
-  const strippedBody = normalizeText(
-    source
-      .replace(heading, "")
-      .replace(/^[：:，,；;\-—\s]+/, "")
-  );
-  const bodySource =
-    strippedBody && toComparableText(strippedBody) !== toComparableText(heading) ? strippedBody : "";
+  const labeled = splitUnitTitleBody(source);
+  const heading = buildPlainSlot(buildHeading(labeled.title || source, fallback), fallback);
+  const strippedBody = normalizeText(labeled.body || source.replace(heading, "").replace(/^[：:，,；;\-—\s]+/, ""));
+  const bodySource = strippedBody && toComparableText(strippedBody) !== toComparableText(heading) ? strippedBody : "";
 
   return {
     heading,
@@ -520,15 +579,19 @@ function clearTemplatePlaceholderText(xml: CheerioAPI) {
 
 function buildSlideDraft(slide: OutlineSlide) {
   const description = normalizeText(slide.content.description ?? "");
-  const units = description
-    ? dedupeTextItems(splitSummary(description), [
-        slide.title,
-        slide.content.intro,
-        slide.content.regularTitle
-      ])
-    : [];
+  const units = dedupeTextItems(
+    [
+      ...splitSummary(description),
+      ...splitSummary(slide.content.intro ?? ""),
+      ...splitSummary(slide.summary ?? "")
+    ],
+    [slide.title, slide.content.intro, slide.content.regularTitle]
+  );
   const intro = truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro);
-  const unitPool = units.length > 0 ? units : [];
+  const unitPool =
+    units.length > 0
+      ? units
+      : dedupeTextItems(splitSummary(slide.content.regularTitle || slide.title || description));
   return {
     intro,
     title: buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle),
@@ -537,6 +600,43 @@ function buildSlideDraft(slide: OutlineSlide) {
     units: unitPool,
     buckets: buildBuckets(unitPool, 6)
   };
+}
+
+function getStructuredSections(slide: OutlineSlide | undefined) {
+  return slide?.slotContent?.sections ?? [];
+}
+
+function getStructuredCard(slide: OutlineSlide | undefined, sectionIndex: number, cardIndex: number) {
+  return getStructuredSections(slide)[sectionIndex]?.cards[cardIndex];
+}
+
+function getStructuredLabel(slide: OutlineSlide | undefined, sectionIndex: number, fallback: string) {
+  return getStructuredSections(slide)[sectionIndex]?.label || fallback;
+}
+
+function buildOverviewLeadLines(slide: OutlineSlide | undefined, fallback: string) {
+  const section = getStructuredSections(slide)[0];
+  if (!section || section.cards.length === 0) {
+    return buildBodyLines(fallback, 3, SLOT_LIMITS.regularLine);
+  }
+
+  const lines = section.cards.flatMap((card) => {
+    const heading = normalizeText(card.title);
+    const bodyLines = card.bodyLines.filter((line) => normalizeText(line));
+    if (bodyLines.length === 0) {
+      return [heading || " "];
+    }
+
+    const firstLine = bodyLines[0];
+    const mergedFirstLine =
+      heading && toComparableText(heading) !== toComparableText(firstLine)
+        ? truncateText(`${heading}：${firstLine}`, SLOT_LIMITS.regularLine)
+        : firstLine;
+
+    return [mergedFirstLine, ...bodyLines.slice(1).map((line) => truncateText(line, SLOT_LIMITS.regularLine))];
+  });
+
+  return lines.slice(0, 3).filter(Boolean);
 }
 
 function buildTableDraft(slide: OutlineSlide) {
@@ -583,7 +683,6 @@ function fillCoverSlide(xml: CheerioAPI, outline: OutlineDocument) {
 }
 
 function fillDirectorySlide(xml: CheerioAPI, outline: OutlineDocument) {
-  setShapeTextByName(xml, "Title 1", "目录");
   outline.directory.slice(0, 3).forEach((item, index) => {
     setShapeTextByName(
       xml,
@@ -607,6 +706,33 @@ function fillDirectorySlide(xml: CheerioAPI, outline: OutlineDocument) {
 
 function fillImageSlide(xml: CheerioAPI, outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length > 0) {
+    const section = structuredSections[0];
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 2", section?.label || slide.content.regularTitle || "核心内容", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 5", " ", { style: REGULAR_TITLE_STYLE });
+
+    [
+      { title: "TextBox 8", body: "TextBox 9", index: 0 },
+      { title: "TextBox 11", body: "TextBox 12", index: 1 },
+      { title: "TextBox 13", body: "TextBox 14", index: 2 },
+      { title: "TextBox 15", body: "TextBox 16", index: 3 }
+    ].forEach((slot) => {
+      const card = section?.cards[slot.index];
+      setShapeTextByName(xml, slot.title, card?.title ?? " ", { style: SMALL_TITLE_STYLE });
+      setShapeLinesByName(xml, slot.body, card?.bodyLines ?? [" "], { style: DESCRIPTION_STYLE });
+    });
     return;
   }
 
@@ -648,6 +774,70 @@ function fillTwoColumnSlide(xml: CheerioAPI, outline: OutlineDocument, slide?: O
 
 function fillThreeColumnSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 3) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 2", getStructuredLabel(slide, 0, "模块一"), {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 18", getStructuredLabel(slide, 1, "模块二"), {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 22", getStructuredLabel(slide, 2, "模块三"), {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 11", getStructuredCard(slide, 0, 0)?.title ?? " ", {
+      occurrence: 0,
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 12", getStructuredCard(slide, 0, 0)?.bodyLines ?? [" "], {
+      occurrence: 0,
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 26", getStructuredCard(slide, 0, 1)?.title ?? " ", {
+      occurrence: 0,
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 27", getStructuredCard(slide, 0, 1)?.bodyLines ?? [" "], {
+      occurrence: 0,
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 11", getStructuredCard(slide, 1, 0)?.title ?? " ", {
+      occurrence: 1,
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 12", getStructuredCard(slide, 1, 0)?.bodyLines ?? [" "], {
+      occurrence: 1,
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 26", getStructuredCard(slide, 1, 1)?.title ?? " ", {
+      occurrence: 1,
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 27", getStructuredCard(slide, 1, 1)?.bodyLines ?? [" "], {
+      occurrence: 1,
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 23", getStructuredCard(slide, 2, 0)?.title ?? " ", {
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 24", getStructuredCard(slide, 2, 0)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 30", getStructuredCard(slide, 2, 1)?.title ?? " ", {
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 31", getStructuredCard(slide, 2, 1)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
     return;
   }
 
@@ -722,6 +912,38 @@ function fillFourColumnSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?:
     return;
   }
 
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 4) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+
+    [
+      { label: "Rectangle 18", heading: "TextBox 19", body: "TextBox 20", sectionIndex: 0, cardIndex: 0 },
+      { label: "Rectangle 18", heading: "TextBox 51", body: "TextBox 52", sectionIndex: 0, cardIndex: 1 },
+      { label: "Rectangle 18", heading: "TextBox 53", body: "TextBox 54", sectionIndex: 0, cardIndex: 2 },
+      { label: "Rectangle 56", heading: "TextBox 57", body: "TextBox 58", sectionIndex: 1, cardIndex: 0 },
+      { label: "Rectangle 56", heading: "TextBox 59", body: "TextBox 60", sectionIndex: 1, cardIndex: 1 },
+      { label: "Rectangle 56", heading: "TextBox 61", body: "TextBox 62", sectionIndex: 1, cardIndex: 2 },
+      { label: "Rectangle 64", heading: "TextBox 65", body: "TextBox 66", sectionIndex: 2, cardIndex: 0 },
+      { label: "Rectangle 64", heading: "TextBox 67", body: "TextBox 68", sectionIndex: 2, cardIndex: 1 },
+      { label: "Rectangle 64", heading: "TextBox 69", body: "TextBox 70", sectionIndex: 2, cardIndex: 2 },
+      { label: "Rectangle 72", heading: "TextBox 73", body: "TextBox 74", sectionIndex: 3, cardIndex: 0 },
+      { label: "Rectangle 72", heading: "TextBox 75", body: "TextBox 76", sectionIndex: 3, cardIndex: 1 },
+      { label: "Rectangle 72", heading: "TextBox 77", body: "TextBox 78", sectionIndex: 3, cardIndex: 2 }
+    ].forEach((slot) => {
+      const section = structuredSections[slot.sectionIndex];
+      const card = section?.cards[slot.cardIndex];
+      setShapeTextByName(xml, slot.label, section?.label ?? " ", { style: REGULAR_TITLE_STYLE });
+      setShapeTextByName(xml, slot.heading, card?.title ?? " ", { style: SMALL_TITLE_STYLE });
+      setShapeLinesByName(xml, slot.body, card?.bodyLines ?? [" "], { style: DESCRIPTION_STYLE });
+    });
+    return;
+  }
+
   const draft = buildSlideDraft(slide);
   const sections = buildSectionDrafts(draft.units, [3, 3, 3, 3], {
     sectionPrefix: "分区",
@@ -759,6 +981,46 @@ function fillFourColumnSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?:
 
 function fillProgressSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 4) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(xml, "Pentagon 18", structuredSections[0]?.label ?? "阶段一", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Chevron 56", structuredSections[1]?.label ?? "阶段二", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Chevron 36", structuredSections[2]?.label ?? "阶段三", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Chevron 37", structuredSections[3]?.label ?? "阶段四", {
+      style: REGULAR_TITLE_STYLE
+    });
+
+    [
+      { heading: "TextBox 19", body: "TextBox 20", sectionIndex: 0, cardIndex: 0 },
+      { heading: "TextBox 51", body: "TextBox 52", sectionIndex: 0, cardIndex: 1 },
+      { heading: "TextBox 53", body: "TextBox 54", sectionIndex: 0, cardIndex: 2 },
+      { heading: "TextBox 40", body: "TextBox 41", sectionIndex: 1, cardIndex: 0 },
+      { heading: "TextBox 48", body: "TextBox 49", sectionIndex: 1, cardIndex: 1 },
+      { heading: "TextBox 82", body: "TextBox 83", sectionIndex: 2, cardIndex: 0 },
+      { heading: "TextBox 84", body: "TextBox 85", sectionIndex: 2, cardIndex: 1 },
+      { heading: "TextBox 86", body: "TextBox 87", sectionIndex: 2, cardIndex: 2 },
+      { heading: "TextBox 88", body: "TextBox 89", sectionIndex: 3, cardIndex: 0 },
+      { heading: "TextBox 91", body: "TextBox 92", sectionIndex: 3, cardIndex: 1 }
+    ].forEach((slot) => {
+      const card = structuredSections[slot.sectionIndex]?.cards[slot.cardIndex];
+      setShapeTextByName(xml, slot.heading, card?.title ?? " ", { style: SMALL_TITLE_STYLE });
+      setShapeLinesByName(xml, slot.body, card?.bodyLines ?? [" "], { style: DESCRIPTION_STYLE });
+    });
     return;
   }
 
@@ -800,6 +1062,48 @@ function fillProgressSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: O
 
 function fillVerticalSplitSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 2) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 18", structuredSections[0]?.label ?? "上部模块", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 38", structuredSections[1]?.label ?? "下部模块", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 19", getStructuredCard(slide, 0, 0)?.title ?? " ", {
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 20", getStructuredCard(slide, 0, 0)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 35", getStructuredCard(slide, 0, 1)?.title ?? " ", {
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 36", getStructuredCard(slide, 0, 1)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 39", getStructuredCard(slide, 1, 0)?.title ?? " ", {
+      occurrence: 0,
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 40", getStructuredCard(slide, 1, 0)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
+    setShapeTextByName(xml, "TextBox 41", getStructuredCard(slide, 1, 1)?.title ?? " ", {
+      style: SMALL_TITLE_STYLE
+    });
+    setShapeLinesByName(xml, "TextBox 42", getStructuredCard(slide, 1, 1)?.bodyLines ?? [" "], {
+      style: DESCRIPTION_STYLE
+    });
     return;
   }
 
@@ -853,6 +1157,36 @@ function fillSplitGridSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: 
     return;
   }
 
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 2) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 18", structuredSections[0]?.label ?? "上部板块", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 38", structuredSections[1]?.label ?? "下部板块", {
+      style: REGULAR_TITLE_STYLE
+    });
+
+    [
+      { heading: "TextBox 19", body: "TextBox 20", sectionIndex: 0, cardIndex: 0 },
+      { heading: "TextBox 15", body: "TextBox 16", sectionIndex: 0, cardIndex: 1 },
+      { heading: "TextBox 21", body: "TextBox 22", sectionIndex: 0, cardIndex: 2 },
+      { heading: "TextBox 23", body: "TextBox 24", sectionIndex: 1, cardIndex: 0 },
+      { heading: "TextBox 25", body: "TextBox 26", sectionIndex: 1, cardIndex: 1 },
+      { heading: "TextBox 27", body: "TextBox 28", sectionIndex: 1, cardIndex: 2 }
+    ].forEach((slot) => {
+      const card = structuredSections[slot.sectionIndex]?.cards[slot.cardIndex];
+      setShapeTextByName(xml, slot.heading, card?.title ?? " ", { style: SMALL_TITLE_STYLE });
+      setShapeLinesByName(xml, slot.body, card?.bodyLines ?? [" "], { style: DESCRIPTION_STYLE });
+    });
+    return;
+  }
+
   const draft = buildSlideDraft(slide);
   const sections = buildSectionDrafts(draft.units, [3, 3], {
     sectionPrefix: "板块",
@@ -887,6 +1221,42 @@ function fillSplitGridSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: 
 
 function fillOverviewSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 4) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(
+      xml,
+      "Rectangle 18",
+      (structuredSections[0]?.label ?? slide.content.regularTitle) || "总体概述",
+      {
+      style: REGULAR_TITLE_STYLE
+      }
+    );
+    setShapeLinesByName(xml, "TextBox 20", buildOverviewLeadLines(slide, slide.content.description || slide.summary), {
+      style: DESCRIPTION_STYLE
+    });
+    [
+      { badge: "Rectangle 38", heading: "TextBox 39", body: "TextBox 40", index: 1 },
+      { badge: "Rectangle 24", heading: "TextBox 25", body: "TextBox 26", index: 2 },
+      { badge: "Rectangle 28", heading: "TextBox 29", body: "TextBox 30", index: 3 }
+    ].forEach((slot) => {
+      const section = structuredSections[slot.index];
+      setShapeTextByName(xml, slot.badge, section?.label ?? " ", { style: REGULAR_TITLE_STYLE });
+      setShapeTextByName(xml, slot.heading, section?.cards[0]?.title ?? " ", {
+        style: SMALL_TITLE_STYLE
+      });
+      setShapeLinesByName(xml, slot.body, section?.cards[0]?.bodyLines ?? [" "], {
+        style: DESCRIPTION_STYLE
+      });
+    });
     return;
   }
 
@@ -935,6 +1305,59 @@ function fillOverviewSlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: O
 
 function fillHierarchySlide(xml: CheerioAPI, _outline: OutlineDocument, slide?: OutlineSlide) {
   if (!slide) {
+    return;
+  }
+
+  const structuredSections = getStructuredSections(slide);
+  if (structuredSections.length >= 5) {
+    setShapeTextByName(xml, "Title 1", buildPlainSlot(slide.title, "要点", SLOT_LIMITS.pageTitle), {
+      style: REFERENCE_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "文本框 39", truncateText(slide.content.intro || slide.summary, SLOT_LIMITS.intro) || " ", {
+      style: INTRO_STYLE
+    });
+    setShapeTextByName(
+      xml,
+      "TextBox 2",
+      truncateText(
+        structuredSections.flatMap((section) => section.cards.map((card) => card.body)).join("；"),
+        SLOT_LIMITS.largeBody
+      ) || " ",
+      { style: DESCRIPTION_STYLE }
+    );
+    setShapeTextByName(
+      xml,
+      "Down Arrow Callout 18",
+      (structuredSections[0]?.label ?? slide.content.regularTitle) || "模块一",
+      {
+      style: REGULAR_TITLE_STYLE
+      }
+    );
+    setShapeTextByName(xml, "Rectangle 31", structuredSections[1]?.label ?? "主题总览", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Down Arrow Callout 32", structuredSections[2]?.label ?? "模块三", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Down Arrow Callout 33", structuredSections[3]?.label ?? "模块四", {
+      style: REGULAR_TITLE_STYLE
+    });
+    setShapeTextByName(xml, "Rectangle 5", " ", { style: REGULAR_TITLE_STYLE });
+    setShapeTextByName(xml, "Rectangle 55", " ", { style: REGULAR_TITLE_STYLE });
+    setShapeTextByName(xml, "Rectangle 56", " ", { style: REGULAR_TITLE_STYLE });
+    setShapeTextByName(xml, "Rectangle 57", " ", { style: REGULAR_TITLE_STYLE });
+
+    [
+      { heading: "TextBox 19", body: "TextBox 20", sectionIndex: 0, cardIndex: 0 },
+      { heading: "TextBox 36", body: "TextBox 53", sectionIndex: 1, cardIndex: 0 },
+      { heading: "TextBox 51", body: "TextBox 52", sectionIndex: 2, cardIndex: 0 },
+      { heading: "TextBox 59", body: "TextBox 60", sectionIndex: 3, cardIndex: 0 },
+      { heading: "TextBox 61", body: "TextBox 62", sectionIndex: 4, cardIndex: 0 }
+    ].forEach((slot) => {
+      const card = structuredSections[slot.sectionIndex]?.cards[slot.cardIndex];
+      setShapeTextByName(xml, slot.heading, card?.title ?? " ", { style: SMALL_TITLE_STYLE });
+      setShapeLinesByName(xml, slot.body, card?.bodyLines ?? [" "], { style: DESCRIPTION_STYLE });
+    });
     return;
   }
 
@@ -1166,7 +1589,8 @@ export async function generatePptBuffer(outline: OutlineDocument): Promise<Buffe
   const templateBuffer = await readFile(getTemplatePath());
   const zip = await JSZip.loadAsync(templateBuffer);
   const highestExistingSlide = getHighestExistingSlide(zip);
-  const directorySourceSlide = highestExistingSlide;
+  const templateSchema = await loadTemplateSchema();
+  const directorySourceSlide = templateSchema.directory.sourceSlide || highestExistingSlide;
   const slideCount = normalizedOutline.slides.length + 2;
   const detailSources = normalizedOutline.slides.map((slide) => buildDetailPlan(slide).sourceSlide);
   const sourceSlides = await loadSourceSlides(zip, [COVER_SOURCE_SLIDE, directorySourceSlide, ...detailSources]);

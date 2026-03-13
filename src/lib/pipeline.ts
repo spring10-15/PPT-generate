@@ -25,12 +25,36 @@ function normalizeText(text: string | undefined) {
   return (text ?? "").replace(/\s+/g, " ").trim();
 }
 
+function toComparableText(text: string | undefined) {
+  return normalizeText(text).replace(/[：:；;。！？,.，、】【（）()[\]\s-]/g, "");
+}
+
 function splitPoints(text: string) {
   return normalizeText(text)
     .split(/[。！？；;\n]/)
     .flatMap((part) => part.split(/[，,、]/))
     .map((part) => normalizeText(part))
     .filter(Boolean);
+}
+
+function dedupePoints(points: string[], blocked: string[] = []) {
+  const blockedSet = new Set(
+    blocked
+      .flatMap((item) => [item, ...splitPoints(item)])
+      .map((item) => toComparableText(item))
+      .filter(Boolean)
+  );
+  const seen = new Set<string>();
+
+  return points.filter((point) => {
+    const comparable = toComparableText(point);
+    if (!comparable || blockedSet.has(comparable) || seen.has(comparable)) {
+      return false;
+    }
+
+    seen.add(comparable);
+    return true;
+  });
 }
 
 function fitWithinLimit(text: string, maxChars: number) {
@@ -134,13 +158,57 @@ function buildHierarchy(document: StructuredOutlineDocument): StructuredOutlineH
   ];
 }
 
+function syncStructuredOutlineWithAssembly(
+  structuredOutline: StructuredOutlineDocument,
+  assembly: AssemblyInstructionDocument
+): StructuredOutlineDocument {
+  const activeDirectoryIds = new Set(assembly.directory.map((item) => item.id));
+  const directoryMap = new Map(
+    assembly.directory.map((item) => [
+      item.id,
+      {
+        id: item.id,
+        order: item.order,
+        title: item.fields.title.value,
+        description: item.fields.description.value
+      }
+    ])
+  );
+
+  const nextDocument: StructuredOutlineDocument = {
+    ...structuredOutline,
+    directory: assembly.directory.map((item) => ({
+      id: item.id,
+      order: item.order,
+      title: item.fields.title.value,
+      description: item.fields.description.value
+    })),
+    pages: structuredOutline.pages
+      .filter((page) => activeDirectoryIds.has(page.directoryId))
+      .map((page) => ({
+        ...page,
+        directoryTitle: directoryMap.get(page.directoryId)?.title ?? page.directoryTitle
+      }))
+  };
+
+  nextDocument.hierarchy = buildHierarchy(nextDocument);
+  return nextDocument;
+}
+
 function buildStructuredOutlineDocument(
   parsed: ParsedDocument,
   outline: OutlineDocument,
   input: GeneratorInput
 ): StructuredOutlineDocument {
   const pages: StructuredOutlinePage[] = outline.slides.map((slide, index) => {
-    const keyPoints = splitPoints(slide.content.description || slide.summary);
+    const keyPoints = dedupePoints(
+      [
+        ...splitPoints(slide.content.description || ""),
+        ...splitPoints(slide.content.intro || ""),
+        ...splitPoints(slide.summary || "")
+      ],
+      [slide.title, slide.content.regularTitle, slide.content.intro]
+    );
     const summary = normalizeText(slide.summary || slide.content.description || slide.content.intro);
 
     return {
@@ -210,8 +278,8 @@ function scoreLayout(page: StructuredOutlinePage, layout: TemplateLayoutSchema) 
 
   if (page.hasImage) {
     score += ["image", "image-left", "image-right", "two-column"].includes(layout.layoutType) ? 80 : -30;
-  } else if (["image", "image-left", "image-right"].includes(layout.layoutType)) {
-    score -= 100;
+  } else if (layout.capacities.pictureSlots > 0 || ["image", "image-left", "image-right"].includes(layout.layoutType)) {
+    score -= layout.layoutType === "two-column" ? 80 : 120;
   }
 
   if (page.relation === "sequential") {
@@ -336,7 +404,16 @@ function buildAssemblyInstructions(
     );
     const detailSlotLimits = getDetailSlotLimits(layout);
     const detailCapacity = Math.max(1, detailSlotLimits.length);
-    const normalizedPoints = (page.keyPoints.length > 0 ? page.keyPoints : [page.description || page.summary])
+    const sourcePoints = dedupePoints(page.keyPoints, [page.title, page.intro, page.regularTitle]);
+    const fallbackPoints = dedupePoints(
+      splitPoints(page.description || page.summary),
+      [page.title, page.regularTitle]
+    );
+    const normalizedPoints = (sourcePoints.length > 0
+      ? sourcePoints
+      : fallbackPoints.length > 0
+        ? fallbackPoints
+        : [page.description || page.summary])
       .map((point, index) => fitWithinLimit(point, detailSlotLimits[index % detailCapacity] ?? 60))
       .filter(Boolean);
     const pointChunks = chunkItems(normalizedPoints, detailCapacity);
@@ -406,6 +483,12 @@ function buildAssemblyInstructions(
             helper: `当前版式可承载 ${detailCapacity} 个要点，字符上限按节点二 Python 扫描出的文本坑位自动汇总。`
           }
         },
+        detailPoints: fittedChunk,
+        slotMode: "derived",
+        slotContent: {
+          sections: [],
+          unassigned: []
+        },
         notes,
         imageIds: page.imageIds,
         table: page.table,
@@ -468,6 +551,12 @@ function buildAssemblyInstructions(
             helper: `当前版式可承载 ${detailCapacity} 个要点，字符上限按节点二 Python 扫描出的文本坑位自动汇总。`
           }
         },
+        detailPoints: [],
+        slotMode: "derived",
+        slotContent: {
+          sections: [],
+          unassigned: []
+        },
         notes: [],
         imageIds: page.imageIds,
         table: page.table,
@@ -527,6 +616,19 @@ function buildAssemblyInstructions(
       issues: []
     }
   });
+}
+
+export function rebuildPipelineFromConfirmedDirectory(
+  pipeline: GenerationPipeline
+): GenerationPipeline {
+  const node1 = syncStructuredOutlineWithAssembly(pipeline.node1, pipeline.node3);
+  const node3 = buildAssemblyInstructions(node1, pipeline.node2);
+
+  return {
+    ...pipeline,
+    node1,
+    node3
+  };
 }
 
 export async function buildGenerationPipeline(

@@ -9,7 +9,13 @@ function assertAssemblyDocument(body: unknown): AssemblyInstructionDocument {
   }
 
   const candidate = body as Partial<AssemblyInstructionDocument>;
-  if (!candidate.cover || !candidate.directory || !candidate.slides || !candidate.extractedImages) {
+  if (
+    !candidate.cover ||
+    !candidate.directory ||
+    !candidate.slides ||
+    !candidate.extractedImages ||
+    !candidate.templateSchema
+  ) {
     throw new Error("导出参数缺少必要的装配指令。");
   }
 

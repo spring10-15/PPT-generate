@@ -29,6 +29,7 @@ export type ParsedSection = {
   paragraphs: string[];
   tables: string[][];
   imageIds: string[];
+  isHeadingOnly?: boolean;
 };
 
 export type ParsedDocument = {
@@ -55,6 +56,32 @@ export type SlideContentDraft = {
   description: string;
 };
 
+export type SlideSlotCard = {
+  id: string;
+  order: number;
+  title: string;
+  body: string;
+  bodyLines: string[];
+  titleMaxChars: number;
+  bodyMaxChars: number;
+  titleOverflow: boolean;
+  bodyOverflow: boolean;
+};
+
+export type SlideSlotSection = {
+  id: string;
+  order: number;
+  label: string;
+  labelMaxChars: number;
+  labelOverflow: boolean;
+  cards: SlideSlotCard[];
+};
+
+export type SlideSlotContent = {
+  sections: SlideSlotSection[];
+  unassigned: string[];
+};
+
 export type OutlineSlide = {
   id: string;
   directoryId: string;
@@ -66,6 +93,8 @@ export type OutlineSlide = {
   imageSuggestion: string;
   imageIds: string[];
   table?: string[][];
+  detailPoints?: string[];
+  slotContent?: SlideSlotContent;
 };
 
 export type OutlineDocument = {
@@ -247,6 +276,9 @@ export type AssemblySlideInstruction = {
     regularTitle: AssemblyTextField;
     description: AssemblyTextField;
   };
+  detailPoints: string[];
+  slotMode: "derived" | "manual";
+  slotContent: SlideSlotContent;
   notes: string[];
   imageIds: string[];
   table?: string[][];
@@ -310,6 +342,37 @@ export type ChatRouteResponse = {
   assistantMessages: string[];
   action?: "none" | "export";
 };
+
+export type ChatDirective =
+  | {
+      type: "confirm-directory";
+    }
+  | {
+      type: "confirm-summary";
+    }
+  | {
+      type: "directory-update";
+      updates: Array<{
+        order: number;
+        title?: string;
+        description?: string;
+        remove?: boolean;
+      }>;
+    }
+  | {
+      type: "summary-update";
+      updates: Array<{
+        pageNumber: number;
+        remove?: boolean;
+        pageTitle?: string;
+        intro?: string;
+        sectionOrder?: number;
+        sectionLabel?: string;
+        cardOrder?: number;
+        cardTitle?: string;
+        cardBody?: string;
+      }>;
+    };
 
 export type TemplateColorTokens = {
   primary: string;

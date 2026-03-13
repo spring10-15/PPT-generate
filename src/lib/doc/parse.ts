@@ -20,6 +20,43 @@ function normalizeText(text: string): string {
   return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function buildFallbackSectionTitle(index: number) {
+  return `章节 ${index + 1}`;
+}
+
+function detectStructuredHeading(text: string) {
+  const normalized = normalizeText(text);
+  if (!normalized || normalized.length > 48) {
+    return null;
+  }
+
+  const patterns: Array<{ regex: RegExp; level: number }> = [
+    { regex: /^\d+\.\d+\.\d+\.?\s*(.+)$/u, level: 3 },
+    { regex: /^\d+\.\d+\s*(.+)$/u, level: 2 },
+    { regex: /^(第[一二三四五六七八九十百]+[章节部分篇]|[一二三四五六七八九十]+[、.．])\s*(.+)$/u, level: 1 },
+    { regex: /^\d+\s*[、.．]\s*(.+)$/u, level: 1 }
+  ];
+
+  for (const pattern of patterns) {
+    const match = normalized.match(pattern.regex);
+    if (!match) {
+      continue;
+    }
+
+    const title = normalizeText(match[2] ?? match[1] ?? "");
+    if (!title) {
+      return null;
+    }
+
+    return {
+      title,
+      level: pattern.level
+    };
+  }
+
+  return null;
+}
+
 function guessTitleFromSections(sections: ParsedSection[], rawText: string): string {
   if (sections.length > 0 && sections[0].title) {
     return sections[0].title;
@@ -85,11 +122,13 @@ function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" |
   let currentLevel = 1;
   let currentParagraphs: string[] = [];
   let currentTables: string[][] = [];
+  let currentHasExplicitHeading = false;
   let sectionIndex = 0;
 
-  const flush = () => {
+  const flush = (forceHeadingOnly = false) => {
     const normalizedParagraphs = currentParagraphs.map((text) => normalizeText(text)).filter(Boolean);
-    if (normalizedParagraphs.length === 0 && currentTables.length === 0 && sections.length > 0) {
+    const hasContent = normalizedParagraphs.length > 0 || currentTables.length > 0;
+    if (!hasContent && !forceHeadingOnly && sections.length > 0) {
       return;
     }
 
@@ -97,13 +136,15 @@ function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" |
       id: makeId("section", sectionIndex),
       title: currentTitle,
       level: currentLevel,
-      paragraphs: normalizedParagraphs.length > 0 ? normalizedParagraphs : ["待补充内容"],
+      paragraphs: normalizedParagraphs,
       tables: currentTables,
-      imageIds: []
+      imageIds: [],
+      isHeadingOnly: !hasContent && currentHasExplicitHeading
     });
     sectionIndex += 1;
     currentTables = [];
     currentParagraphs = [];
+    currentHasExplicitHeading = false;
   };
 
   const pushParagraph = (value: string) => {
@@ -123,21 +164,27 @@ function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" |
 
     const markdownHeading = line.match(/^(#{1,6})\s+(.+)$/);
     if (markdownHeading) {
-      if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
+      if (currentParagraphs.length > 0 || currentTables.length > 0) {
         flush();
+      } else if (currentHasExplicitHeading) {
+        flush(true);
       }
-      currentTitle = normalizeText(markdownHeading[2]) || `章节 ${sectionIndex + 1}`;
+      currentTitle = normalizeText(markdownHeading[2]) || buildFallbackSectionTitle(sectionIndex);
       currentLevel = markdownHeading[1].length;
+      currentHasExplicitHeading = true;
       return;
     }
 
-    const textHeading = line.match(/^(第[一二三四五六七八九十百]+[章节部分篇]|[一二三四五六七八九十]+[、.．]|\d+[、.．])\s*(.+)$/);
-    if (textHeading && trimmed.length <= 40) {
-      if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
+    const textHeading = detectStructuredHeading(trimmed);
+    if (textHeading) {
+      if (currentParagraphs.length > 0 || currentTables.length > 0) {
         flush();
+      } else if (currentHasExplicitHeading) {
+        flush(true);
       }
-      currentTitle = normalizeText(textHeading[2]) || `章节 ${sectionIndex + 1}`;
-      currentLevel = 1;
+      currentTitle = textHeading.title || buildFallbackSectionTitle(sectionIndex);
+      currentLevel = textHeading.level;
+      currentHasExplicitHeading = true;
       return;
     }
 
@@ -160,8 +207,8 @@ function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" |
     pushParagraph(trimmed);
   });
 
-  if (currentParagraphs.length > 0 || currentTables.length > 0 || sections.length === 0) {
-    flush();
+  if (currentParagraphs.length > 0 || currentTables.length > 0 || currentHasExplicitHeading || sections.length === 0) {
+    flush(currentHasExplicitHeading);
   }
 
   return {
@@ -172,7 +219,7 @@ function parseMarkdownOrText(fileName: string, rawText: string, fileType: "md" |
     subtitleGuess: buildSubtitle(rawText),
     sections: sections.map((section, index) => ({
       ...section,
-      title: section.title || `章节 ${index + 1}`
+      title: section.title || buildFallbackSectionTitle(index)
     })),
     images: []
   };
@@ -192,15 +239,19 @@ function parseDocxHtml(
   let currentParagraphs: string[] = [];
   let currentTables: string[][] = [];
   let currentImageIds: string[] = [];
+  let currentHasExplicitHeading = false;
   let sectionIndex = 0;
   let imageIndex = 0;
 
-  const flush = () => {
+  const flush = (forceHeadingOnly = false) => {
     const normalizedParagraphs = currentParagraphs.map((text) => normalizeText(text)).filter(Boolean);
+    const hasContent =
+      normalizedParagraphs.length > 0 ||
+      currentTables.length > 0 ||
+      currentImageIds.length > 0;
     if (
-      normalizedParagraphs.length === 0 &&
-      currentTables.length === 0 &&
-      currentImageIds.length === 0 &&
+      !hasContent &&
+      !forceHeadingOnly &&
       sections.length > 0
     ) {
       return;
@@ -210,13 +261,31 @@ function parseDocxHtml(
       id: makeId("section", sectionIndex),
       title: currentTitle,
       level: currentLevel,
-      paragraphs: normalizedParagraphs.length > 0 ? normalizedParagraphs : ["待补充内容"],
+      paragraphs: normalizedParagraphs,
       tables: currentTables,
-      imageIds: currentImageIds
+      imageIds: currentImageIds,
+      isHeadingOnly: !hasContent && currentHasExplicitHeading
     });
     sectionIndex += 1;
+    currentParagraphs = [];
     currentTables = [];
     currentImageIds = [];
+    currentHasExplicitHeading = false;
+  };
+
+  const beginHeading = (title: string, level: number) => {
+    if (currentParagraphs.length > 0 || currentTables.length > 0 || currentImageIds.length > 0) {
+      flush();
+    } else if (currentHasExplicitHeading) {
+      flush(true);
+    }
+
+    currentTitle = normalizeText(title) || `章节 ${sectionIndex + 1}`;
+    currentLevel = level;
+    currentParagraphs = [];
+    currentTables = [];
+    currentImageIds = [];
+    currentHasExplicitHeading = true;
   };
 
   $("body")
@@ -229,18 +298,18 @@ function parseDocxHtml(
       }
 
       if (/^h[1-6]$/.test(tagName)) {
-        if (currentParagraphs.length > 0 || currentTables.length > 0 || currentImageIds.length > 0) {
-          flush();
-        }
-
-        currentTitle = normalizeText($(element).text()) || `章节 ${sectionIndex + 1}`;
-        currentLevel = Number(tagName.slice(1));
-        currentParagraphs = [];
+        beginHeading($(element).text(), Number(tagName.slice(1)));
         return;
       }
 
       if (tagName === "p" || tagName === "li") {
         const text = normalizeText($(element).text());
+        const inlineHeading = detectStructuredHeading(text);
+        if (inlineHeading) {
+          beginHeading(inlineHeading.title, inlineHeading.level);
+          return;
+        }
+
         if (text) {
           currentParagraphs.push(text);
         }
@@ -289,8 +358,8 @@ function parseDocxHtml(
       }
     });
 
-  if (currentParagraphs.length > 0 || sections.length === 0) {
-    flush();
+  if (currentParagraphs.length > 0 || currentTables.length > 0 || currentImageIds.length > 0 || currentHasExplicitHeading || sections.length === 0) {
+    flush(currentHasExplicitHeading);
   }
 
   return {
@@ -301,7 +370,7 @@ function parseDocxHtml(
     subtitleGuess: buildSubtitle(rawText),
     sections: sections.map((section, index) => ({
       ...section,
-      title: section.title || `章节 ${index + 1}`
+      title: section.title || buildFallbackSectionTitle(index)
     })),
     images
   };
@@ -347,7 +416,12 @@ async function parseDocBuffer(fileName: string, buffer: Buffer): Promise<ParsedD
   const sections = (paragraphs.length > 0 ? paragraphs : ["项目概述"])
     .slice(0, 8)
     .map((paragraph, index) =>
-      sectionFromParagraphs(index === 0 ? paragraph || "概览" : `章节 ${index}`, [paragraph], 1, index)
+      sectionFromParagraphs(
+        index === 0 ? paragraph || "概览" : buildFallbackSectionTitle(index),
+        [paragraph],
+        1,
+        index
+      )
     );
 
   return {

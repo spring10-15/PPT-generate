@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { handleChatTurn } from "@/lib/chat-orchestrator";
-import type { ChatSessionState } from "@/lib/types";
+import type { ChatDirective, ChatSessionState } from "@/lib/types";
 
 const stateSchema = z
   .object({
@@ -31,14 +31,19 @@ export async function POST(request: Request) {
     const file = formData.get("file");
     const message = String(formData.get("message") ?? "");
     const rawState = formData.get("state");
+    const rawDirective = formData.get("directive");
     const parsedState = rawState
       ? stateSchema.parse(JSON.parse(String(rawState))) as ChatSessionState
+      : null;
+    const parsedDirective = rawDirective
+      ? (JSON.parse(String(rawDirective)) as ChatDirective)
       : null;
 
     const response = await handleChatTurn({
       state: parsedState,
       message,
-      file: file instanceof File ? file : null
+      file: file instanceof File ? file : null,
+      directive: parsedDirective
     });
 
     return NextResponse.json(response);

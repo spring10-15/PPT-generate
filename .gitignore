@@ -9,3 +9,7 @@ tmp
 *.log
 .DS_Store
 tsconfig.tsbuildinfo
+assets/templates/*.pptx
+!assets/templates/.gitkeep
+output/doc
+docs/PRD.md
