@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import { useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import type {
@@ -62,6 +63,18 @@ type SummaryDraftSlide = {
   introMaxChars: number;
   sections: SlotSectionDraft[];
 };
+
+type PreviewPreset =
+  | "initial"
+  | "filled"
+  | "textmaterial"
+  | "thinking"
+  | "directory"
+  | "directory-editing"
+  | "summary"
+  | "summary-overflow"
+  | "ready"
+  | "success";
 
 const initialState: ChatSessionState = {
   stage: "collect",
@@ -192,6 +205,391 @@ function buildSummaryDraft(pipeline: GenerationPipeline | null): SummaryDraftSli
       }))
     }))
   }));
+}
+
+function createPreviewDirectoryDraft(): DirectoryDraftItem[] {
+  return [
+    {
+      id: "preview-directory-1",
+      order: 1,
+      title: "技术方案",
+      titleMaxChars: 5,
+      description: "系统总体方案",
+      descriptionMaxChars: 10
+    },
+    {
+      id: "preview-directory-2",
+      order: 2,
+      title: "应用场景",
+      titleMaxChars: 5,
+      description: "办公协同场景",
+      descriptionMaxChars: 10
+    },
+    {
+      id: "preview-directory-3",
+      order: 3,
+      title: "落地价值",
+      titleMaxChars: 5,
+      description: "项目业务价值",
+      descriptionMaxChars: 10
+    }
+  ];
+}
+
+function createPreviewSummaryDraft(): SummaryDraftSlide[] {
+  return [
+    {
+      id: "preview-slide-1",
+      pageNumber: 1,
+      layoutName: "总体",
+      pageTitle: "技术方案概览",
+      pageTitleMaxChars: 12,
+      intro: "统一梳理文档解析、目录生成与模板装配流程。",
+      introMaxChars: 30,
+      sections: [
+        {
+          id: "preview-slide-1-section-1",
+          order: 1,
+          label: "核心能力",
+          labelMaxChars: 10,
+          cards: [
+            {
+              id: "preview-slide-1-card-1",
+              order: 1,
+              title: "文档解析",
+              titleMaxChars: 15,
+              body: "自动抽取标题层级、关键段落、表格与图片素材。",
+              bodyMaxChars: 60
+            },
+            {
+              id: "preview-slide-1-card-2",
+              order: 2,
+              title: "模板匹配",
+              titleMaxChars: 15,
+              body: "根据版式槽位与字数边界，为内容选择合适模板。",
+              bodyMaxChars: 60
+            },
+            {
+              id: "preview-slide-1-card-3",
+              order: 3,
+              title: "终稿导出",
+              titleMaxChars: 15,
+              body: "保留模板样式和原生元素，导出可编辑 PPTX。",
+              bodyMaxChars: 60
+            }
+          ]
+        }
+      ]
+    },
+    {
+      id: "preview-slide-2",
+      pageNumber: 2,
+      layoutName: "左右结构",
+      pageTitle: "应用场景展开",
+      pageTitleMaxChars: 12,
+      intro: "围绕协同办公与业务提效场景展开页级说明。",
+      introMaxChars: 30,
+      sections: [
+        {
+          id: "preview-slide-2-section-1",
+          order: 1,
+          label: "协同办公",
+          labelMaxChars: 10,
+          cards: [
+            {
+              id: "preview-slide-2-card-1",
+              order: 1,
+              title: "资料沉淀",
+              titleMaxChars: 15,
+              body: "将方案、纪要和规则统一沉淀，支撑后续知识复用。",
+              bodyMaxChars: 60
+            },
+            {
+              id: "preview-slide-2-card-2",
+              order: 2,
+              title: "执行协同",
+              titleMaxChars: 15,
+              body: "围绕任务分工、过程同步和结果复盘形成闭环。",
+              bodyMaxChars: 60
+            }
+          ]
+        }
+      ]
+    }
+  ];
+}
+
+function createPreviewSnapshot(preset: PreviewPreset): {
+  messages: ChatMessage[];
+  chatState: ChatSessionState;
+  status: string;
+  directoryDraft: DirectoryDraftItem[];
+  summaryDraft: SummaryDraftSlide[];
+  showThinking: boolean;
+  validationIssues: string[];
+} {
+  const sourceAttachment: ChatAttachment = {
+    name: "企业协同方案说明.docx",
+    extension: "DOCX",
+    sizeLabel: "428 KB"
+  };
+
+  const baseMessages: ChatMessage[] = [
+    makeMessage(
+      "assistant",
+      "欢迎使用 PPT 生成助手。\n\n我们会通过对话完成信息收集、目录确认、槽位级摘要确认和终稿导出。\n\n先告诉我汇报人名称。"
+    ),
+    makeMessage("user", "汇报人是张明，这次汇报控制在 12 页，演讲时长 15 分钟。"),
+    makeMessage("assistant", "好的，我已经记录汇报人、页数和演讲时长。\n\n请继续上传素材文件，或者直接粘贴文字内容。"),
+    makeMessage("user", "我先上传方案材料。", sourceAttachment)
+  ];
+
+  const baseState: ChatSessionState = {
+    stage: "collect",
+    confidence: 75,
+    input: {
+      userName: "张明",
+      targetAudience: "",
+      estimatedMinutes: 15,
+      totalPages: 12
+    },
+    sourceMaterial: {
+      kind: "file",
+      name: "企业协同方案说明.docx",
+      preview: "已上传方案材料"
+    },
+    pipeline: null
+  };
+
+  if (preset === "initial") {
+    return {
+      messages: createInitialMessages(),
+      chatState: initialState,
+      status: "可直接输入文字，或点击左下角 + 上传素材。",
+      directoryDraft: [] as DirectoryDraftItem[],
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "filled") {
+    return {
+      messages: baseMessages,
+      chatState: baseState,
+      status: "已记录汇报人、时长、页数，并附带素材文件。",
+      directoryDraft: [] as DirectoryDraftItem[],
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "textmaterial") {
+    return {
+      messages: [
+        makeMessage(
+          "assistant",
+          "欢迎使用 PPT 生成助手。\n\n我们会通过对话完成信息收集、目录确认、槽位级摘要确认和终稿导出。\n\n先告诉我汇报人名称。"
+        ),
+        makeMessage("user", "汇报人是张明，这次给业务团队汇报，时长 15 分钟，想做 12 页。"),
+        makeMessage(
+          "assistant",
+          "好的，我已经记录了汇报人、目标受众、时长和页数。\n\n如果方便，可以直接把文字素材粘贴到聊天框里。"
+        ),
+        makeMessage(
+          "user",
+          "以下是方案摘要：知识平台负责沉淀业务资料与知识资产，智能助手负责问答、任务分发与结果回收，两者通过文档、任务和知识库建立统一协同闭环。"
+        )
+      ],
+      chatState: {
+        stage: "collect",
+        confidence: 95,
+        input: {
+          userName: "张明",
+          targetAudience: "业务团队",
+          estimatedMinutes: 15,
+          totalPages: 12
+        },
+        sourceMaterial: {
+          kind: "text",
+          name: "聊天输入素材",
+          preview: "已粘贴一段方案摘要"
+        },
+        pipeline: null
+      },
+      status: "已收集到完整信息，准备生成目录。",
+      directoryDraft: [] as DirectoryDraftItem[],
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "thinking") {
+    return {
+      messages: baseMessages,
+      chatState: {
+        ...baseState,
+        confidence: 95
+      },
+      status: "正在解析素材并生成目录。",
+      directoryDraft: [] as DirectoryDraftItem[],
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: true,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "directory") {
+    return {
+      messages: [
+        ...baseMessages,
+        makeMessage(
+          "assistant",
+          "我已经结合素材梳理出目录，请直接在下方卡片里调整标题和简要说明。"
+        )
+      ],
+      chatState: {
+        ...baseState,
+        stage: "directory",
+        confidence: 100
+      },
+      status: "请先确认目录结构。",
+      directoryDraft: createPreviewDirectoryDraft(),
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "directory-editing") {
+    const draft = createPreviewDirectoryDraft();
+    draft[1] = {
+      ...draft[1],
+      title: "核心场景",
+      description: "覆盖办公与行业"
+    };
+
+    return {
+      messages: [
+        ...baseMessages,
+        makeMessage(
+          "assistant",
+          "我已经结合素材梳理出目录，请直接在下方卡片里调整标题和简要说明。"
+        ),
+        makeMessage("user", "第二个目录我想换成更聚焦的表述。")
+      ],
+      chatState: {
+        ...baseState,
+        stage: "directory",
+        confidence: 100
+      },
+      status: "目录已编辑，可继续保存或确认。",
+      directoryDraft: draft,
+      summaryDraft: [] as SummaryDraftSlide[],
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "summary") {
+    return {
+      messages: [
+        ...baseMessages,
+        makeMessage("assistant", "目录已确认。我已按目录结构展开详情摘要，请继续确认每一页的槽位内容。")
+      ],
+      chatState: {
+        ...baseState,
+        stage: "summary",
+        confidence: 100
+      },
+      status: "请确认每一页的槽位摘要。",
+      directoryDraft: createPreviewDirectoryDraft(),
+      summaryDraft: createPreviewSummaryDraft(),
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  if (preset === "summary-overflow") {
+    const draft = createPreviewSummaryDraft();
+    draft[0] = {
+      ...draft[0],
+      intro: "统一梳理文档解析、目录生成、模板装配与多角色协同确认流程，确保最终成稿既符合固定模板也保持业务语义完整。",
+      sections: draft[0].sections.map((section, sectionIndex) =>
+        sectionIndex === 0
+          ? {
+              ...section,
+              cards: section.cards.map((card, cardIndex) =>
+                cardIndex === 0
+                  ? {
+                      ...card,
+                      body: "自动抽取标题层级、关键段落、表格与图片素材，并结合语义摘要对文档中的商业逻辑、业务结构和关键数据进行稳定重组。"
+                    }
+                  : card
+              )
+            }
+          : section
+      )
+    };
+
+    return {
+      messages: [
+        ...baseMessages,
+        makeMessage("assistant", "目录已确认。我已按目录结构展开详情摘要，请继续确认每一页的槽位内容。"),
+        makeMessage("user", "第一页我想再补充完整一点。")
+      ],
+      chatState: {
+        ...baseState,
+        stage: "summary",
+        confidence: 100
+      },
+      status: "当前有超出模板红线的内容，请先收敛文案。",
+      directoryDraft: createPreviewDirectoryDraft(),
+      summaryDraft: draft,
+      showThinking: false,
+      validationIssues: ["页码 1 内容简介超出模板上限", "页码 1 条目 1.1 说明性文字超出模板上限"]
+    };
+  }
+
+  if (preset === "ready") {
+    return {
+      messages: [
+        ...baseMessages,
+        makeMessage("assistant", "目录和摘要都已确认，可以直接生成 PPT 终稿。")
+      ],
+      chatState: {
+        ...baseState,
+        stage: "ready",
+        confidence: 100
+      },
+      status: "摘要已确认，可以生成 PPT。",
+      directoryDraft: createPreviewDirectoryDraft(),
+      summaryDraft: createPreviewSummaryDraft(),
+      showThinking: false,
+      validationIssues: []
+    };
+  }
+
+  return {
+    messages: [
+      ...baseMessages,
+      makeMessage("assistant", "目录和摘要都已确认，可以直接生成 PPT 终稿。"),
+      makeMessage("user", "生成PPT"),
+      makeMessage("assistant", "PPT 终稿已生成，下载已经开始。")
+    ],
+    chatState: {
+      ...baseState,
+      stage: "ready",
+      confidence: 100
+    },
+    status: "PPT 终稿已生成并开始下载。",
+    directoryDraft: createPreviewDirectoryDraft(),
+    summaryDraft: createPreviewSummaryDraft(),
+    showThinking: false,
+    validationIssues: []
+  };
 }
 
 function buildStatusByStage(response: ChatRouteResponse) {
@@ -381,10 +779,10 @@ function DirectoryReviewPanel(props: DirectoryPanelProps) {
         </div>
         <div className="review-actions">
           <button type="button" className="mini-btn secondary" onClick={props.onSave} disabled={props.disabled}>
-            保存目录修改
+            暂存
           </button>
           <button type="button" className="mini-btn primary" onClick={props.onConfirm} disabled={props.disabled}>
-            确认目录
+            提交
           </button>
         </div>
       </div>
@@ -473,10 +871,10 @@ function SummaryReviewPanel(props: SummaryPanelProps) {
         </div>
         <div className="review-actions">
           <button type="button" className="mini-btn secondary" onClick={props.onSave} disabled={props.disabled}>
-            保存摘要修改
+            暂存
           </button>
           <button type="button" className="mini-btn secondary" onClick={props.onConfirm} disabled={props.disabled}>
-            确认摘要
+            提交
           </button>
           {props.isReady ? (
             <button type="button" className="mini-btn primary" onClick={props.onGenerate} disabled={props.disabled}>
@@ -678,6 +1076,31 @@ function SummaryReviewPanel(props: SummaryPanelProps) {
 }
 
 export default function HomePage() {
+  const searchParams = useSearchParams();
+  const previewPreset = useMemo(() => {
+    const value = searchParams.get("preset");
+    if (
+      value === "initial" ||
+      value === "filled" ||
+      value === "textmaterial" ||
+      value === "thinking" ||
+      value === "directory" ||
+      value === "directory-editing" ||
+      value === "summary" ||
+      value === "summary-overflow" ||
+      value === "success" ||
+      value === "ready"
+    ) {
+      return value as PreviewPreset;
+    }
+
+    return null;
+  }, [searchParams]);
+  const previewSnapshot = useMemo(
+    () => (previewPreset ? createPreviewSnapshot(previewPreset) : null),
+    [previewPreset]
+  );
+  const isPreviewMode = Boolean(previewSnapshot);
   const [messages, setMessages] = useState<ChatMessage[]>(() => createInitialMessages());
   const [chatState, setChatState] = useState<ChatSessionState>(initialState);
   const [composer, setComposer] = useState("");
@@ -687,13 +1110,34 @@ export default function HomePage() {
   const [isExporting, setIsExporting] = useState(false);
   const [directoryDraft, setDirectoryDraft] = useState<DirectoryDraftItem[]>([]);
   const [summaryDraft, setSummaryDraft] = useState<SummaryDraftSlide[]>([]);
+  const [previewValidationIssues, setPreviewValidationIssues] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!previewSnapshot) {
+      return;
+    }
+
+    setMessages(previewSnapshot.messages);
+    setChatState(previewSnapshot.chatState);
+    setComposer("");
+    setAttachedFile(null);
+    setStatus(previewSnapshot.status);
+    setDirectoryDraft(previewSnapshot.directoryDraft);
+    setSummaryDraft(previewSnapshot.summaryDraft);
+    setPreviewValidationIssues(previewSnapshot.validationIssues);
+  }, [previewSnapshot]);
+
+  useEffect(() => {
+    if (isPreviewMode) {
+      return;
+    }
+
     setDirectoryDraft(buildDirectoryDraft(chatState.pipeline));
     setSummaryDraft(buildSummaryDraft(chatState.pipeline));
-  }, [chatState.pipeline]);
+    setPreviewValidationIssues([]);
+  }, [chatState.pipeline, isPreviewMode]);
 
   useEffect(() => {
     const node = threadRef.current;
@@ -727,12 +1171,17 @@ export default function HomePage() {
   );
 
   const handleReset = () => {
+    if (isPreviewMode) {
+      return;
+    }
+
     setMessages(createInitialMessages());
     setChatState(initialState);
     setComposer("");
     setAttachedFile(null);
     setDirectoryDraft([]);
     setSummaryDraft([]);
+    setPreviewValidationIssues([]);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -740,6 +1189,10 @@ export default function HomePage() {
   };
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (isPreviewMode) {
+      return;
+    }
+
     const nextFile = event.target.files?.[0] ?? null;
     setAttachedFile(nextFile);
     if (nextFile) {
@@ -878,7 +1331,7 @@ export default function HomePage() {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canSend) {
+    if (!canSend || isPreviewMode) {
       return;
     }
 
@@ -947,11 +1400,7 @@ export default function HomePage() {
   };
 
   const renderLiveReview = () => {
-    if (!chatState.pipeline) {
-      return null;
-    }
-
-    if (chatState.stage === "directory") {
+    if ((chatState.stage === "directory" && directoryDraft.length > 0) || (isPreviewMode && previewPreset === "directory")) {
       return (
         <div className="chat-row is-assistant">
           <div className="chat-bubble assistant review-bubble">
@@ -960,26 +1409,29 @@ export default function HomePage() {
               onChange={setDirectoryDraft}
               onSave={handleDirectorySave}
               onConfirm={handleDirectoryConfirm}
-              disabled={isSending || isExporting}
+              disabled={isPreviewMode || isSending || isExporting}
             />
           </div>
         </div>
       );
     }
 
-    if (chatState.stage === "summary" || chatState.stage === "ready") {
+    if ((chatState.stage === "summary" || chatState.stage === "ready") && summaryDraft.length > 0) {
       return (
         <div className="chat-row is-assistant">
           <div className="chat-bubble assistant review-bubble">
             <SummaryReviewPanel
               draft={summaryDraft}
-              validationIssues={chatState.pipeline.node3.validation.issues}
+              validationIssues={isPreviewMode ? previewValidationIssues : chatState.pipeline?.node3.validation.issues ?? []}
               onChange={setSummaryDraft}
               onSave={handleSummarySave}
               onConfirm={handleSummaryConfirm}
               onGenerate={handleGenerate}
-              disabled={isSending || isExporting}
-              isReady={chatState.stage === "ready" && !chatState.pipeline.node3.validation.hasOverflow}
+              disabled={isPreviewMode || isSending || isExporting}
+              isReady={
+                chatState.stage === "ready" &&
+                !(chatState.pipeline?.node3.validation.hasOverflow ?? false)
+              }
             />
           </div>
         </div>
@@ -1012,7 +1464,12 @@ export default function HomePage() {
 
           <div className="chat-only-meta">
             <span className="meta-chip">置信度：{chatState.confidence}%</span>
-            <button type="button" className="btn btn-secondary btn-small" onClick={handleReset}>
+            <button
+              type="button"
+              className="btn btn-secondary btn-small"
+              onClick={handleReset}
+              disabled={isPreviewMode}
+            >
               重新开始
             </button>
           </div>
@@ -1045,7 +1502,7 @@ export default function HomePage() {
             </Fragment>
           ))}
 
-          {isSending || isExporting ? (
+          {isSending || isExporting || previewSnapshot?.showThinking ? (
             <div className="chat-row is-assistant">
               <div className="chat-bubble assistant thinking-bubble">
                 <div className="thinking-dots" aria-hidden="true">
@@ -1053,7 +1510,9 @@ export default function HomePage() {
                   <span />
                   <span />
                 </div>
-                <div className="thinking-text">{thinkingLabel}</div>
+                <div className="thinking-text">
+                  {previewSnapshot?.showThinking ? "正在解析素材并整理目录" : thinkingLabel}
+                </div>
               </div>
             </div>
           ) : null}
@@ -1087,7 +1546,13 @@ export default function HomePage() {
 
           <form className="chat-only-form" onSubmit={handleSubmit}>
             <div className="chat-input-shell">
-              <button type="button" className="chat-plus-btn" onClick={triggerAttach} aria-label="上传文件">
+              <button
+                type="button"
+                className="chat-plus-btn"
+                onClick={triggerAttach}
+                aria-label="上传文件"
+                disabled={isPreviewMode}
+              >
                 +
               </button>
 
@@ -1095,9 +1560,14 @@ export default function HomePage() {
                 value={composer}
                 onChange={(event) => setComposer(event.target.value)}
                 placeholder="输入消息，或粘贴纯文字素材"
+                disabled={isPreviewMode}
               />
 
-              <button type="submit" className="chat-send-btn" disabled={!canSend || isSending || isExporting}>
+              <button
+                type="submit"
+                className="chat-send-btn"
+                disabled={!canSend || isSending || isExporting || isPreviewMode}
+              >
                 {isSending ? "处理中" : isExporting ? "导出中" : "发送"}
               </button>
             </div>
